@@ -76,7 +76,11 @@ COPY --from=fetch /src/README.md /usr/share/licenses/basin/README.md
 
 USER 65534:65534
 
-ENV BASIN_BIND=0.0.0.0:5432 \
+# HOME must point at the writable data directory: basin resolves its disk
+# cache through the platform cache dir, which without HOME lands on a path the
+# uid 65534 user cannot create, silently disabling the cache.
+ENV HOME=/var/basin \
+    BASIN_BIND=0.0.0.0:5432 \
     BASIN_DATA_DIR=/var/basin
 
 VOLUME ["/var/basin"]
