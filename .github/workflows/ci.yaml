@@ -1,0 +1,59 @@
+name: CI
+
+# Pull requests build the image without pushing, so a broken Dockerfile fails
+# before it reaches main and the weekly release run.
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  IMAGE: ghcr.io/copodservices/basin
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve the upstream version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(gh api repos/vul-os/basin/releases/latest --jq .tag_name)
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          build-args: |
+            BASIN_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}
+
+      - name: Smoke the image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker run --detach --name basin-smoke --publish 5432:5432 \
+            --env BASIN_STORAGE_BACKEND=local --env BASIN_PROJECTS=basin=* \
+            --env BASIN_SHARD_ENABLED=1 \
+            --env BASIN_CATALOG=memory \
+            "$IMAGE:pr-${{ github.event.pull_request.number }}"
+          for _ in $(seq 1 30); do
+            if docker exec basin-smoke nc -z 127.0.0.1 5432; then break; fi
+            sleep 2
+          done
+          docker exec basin-smoke nc -z 127.0.0.1 5432
+          docker logs basin-smoke | tail -20
+          docker rm --force basin-smoke

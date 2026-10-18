@@ -1,0 +1,136 @@
+name: Release
+
+# Publishes ghcr.io/copodservices/basin, the packaged vul-os/basin server image.
+#
+# The weekly cron keeps the image current with no human in the loop: every
+# Monday 19:00 Asia/Jakarta (12:00 UTC) it resolves the newest upstream release
+# and publishes it when that version is not in the registry yet. Runs are
+# idempotent, so a week with no upstream release publishes nothing.
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Mondays 19:00 Asia/Jakarta (UTC+7) -> 12:00 UTC.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Upstream basin version to package, without the leading "v"
+        required: false
+      force:
+        description: Rebuild and republish even when the image tag already exists
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/copodservices/basin
+
+jobs:
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.registry.outputs.publish }}
+    steps:
+      - name: Resolve the upstream version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          version="${REQUESTED:-}"
+          version="${version#v}"
+          if [ -z "$version" ]; then
+            tag=$(gh api repos/vul-os/basin/releases/latest --jq .tag_name)
+            version="${tag#v}"
+          fi
+          if [ -z "$version" ]; then
+            echo "could not resolve a basin version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved basin $version"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the registry for this version
+        id: registry
+        env:
+          FORCE: ${{ inputs.force }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "force requested, publishing anyway"
+            exit 0
+          fi
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE:$VERSION is already published, nothing to do"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE:$VERSION is not published yet"
+          fi
+
+  build:
+    name: Build and publish
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Code checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            BASIN_VERSION=${{ needs.resolve.outputs.version }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.resolve.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Summarise
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          {
+            echo "### Published $IMAGE:$VERSION"
+            echo
+            echo "Source release: https://github.com/vul-os/basin/releases/tag/v$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"

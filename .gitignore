@@ -1,0 +1,5 @@
+.DS_Store
+*.tar.gz
+*.sha256
+SHA256SUMS
+/build
