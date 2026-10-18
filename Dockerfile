@@ -9,9 +9,8 @@
 ARG DEBIAN_SUITE=trixie-slim
 
 # --- fetch -------------------------------------------------------------------
-# Downloads the pinned release tarball, verifies it against the release's
-# SHA256SUMS, and strips the debug info the release ships with (the x86_64
-# binary is ~327 MiB unstripped, ~60 MiB after).
+# Runs on the builder, downloads the release tarball for the target
+# architecture, and verifies it against the release SHA256SUMS.
 FROM --platform=$BUILDPLATFORM debian:${DEBIAN_SUITE} AS fetch
 
 # Default for a local `docker build .`: the release this repository was last
@@ -20,7 +19,7 @@ ARG BASIN_VERSION=0.1.10
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends binutils ca-certificates curl \
+    && apt-get install --yes --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -37,9 +36,23 @@ RUN set -eux; \
     curl --fail --silent --show-error --location --retry 3 --output SHA256SUMS "${base}/SHA256SUMS"; \
     grep " ${file}\$" SHA256SUMS > "${file}.sha256"; \
     sha256sum --check "${file}.sha256"; \
-    tar --extract --gzip --file "${file}" --strip-components=1; \
-    install --mode 0755 basin-server basinctl /usr/local/bin/; \
-    strip --strip-all /usr/local/bin/basin-server /usr/local/bin/basinctl
+    tar --extract --gzip --file "${file}" --strip-components=1
+
+# --- strip -------------------------------------------------------------------
+# The release ships unstripped debug builds (~327 MiB for basin-server). binutils
+# in the fetch stage runs on the builder, so it cannot read an ELF for another
+# architecture (strip: Unable to recognise the format). This stage is the target
+# architecture, running under emulation for a cross build, so its own strip
+# always matches the binary it is handed.
+FROM debian:${DEBIAN_SUITE} AS strip
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends binutils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=fetch /src/basin-server /src/basinctl /usr/local/bin/
+
+RUN strip --strip-all /usr/local/bin/basin-server /usr/local/bin/basinctl
 
 # --- runtime -----------------------------------------------------------------
 FROM debian:${DEBIAN_SUITE} AS runtime
@@ -56,8 +69,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && install --directory --owner 65534 --group 65534 /var/basin
 
-COPY --from=fetch /usr/local/bin/basin-server /usr/local/bin/basin-server
-COPY --from=fetch /usr/local/bin/basinctl /usr/local/bin/basinctl
+COPY --from=strip /usr/local/bin/basin-server /usr/local/bin/basin-server
+COPY --from=strip /usr/local/bin/basinctl /usr/local/bin/basinctl
 COPY --from=fetch /src/LICENSE /usr/share/licenses/basin/LICENSE
 COPY --from=fetch /src/README.md /usr/share/licenses/basin/README.md
 

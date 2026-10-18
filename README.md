@@ -51,8 +51,10 @@ psql --host 127.0.0.1 --port 5432 --username basin
 ```
 
 `BASIN_CATALOG` defaults to `memory`, which loses all catalog state on restart. A
-durable deployment points it at PostgreSQL; see
-[`docs/deployment.md`](docs/deployment.md) for the cluster shape.
+durable deployment points it at PostgreSQL and keeps `BASIN_DATA_DIR` and
+`BASIN_WAL_DIR` on a PersistentVolume; `BASIN_PROJECTS` is the static project list,
+while runtime project creation goes through `POST /admin/v1/projects` on the REST
+listener.
 
 ## Consuming the image
 
@@ -65,6 +67,6 @@ containers:
         value: 0.0.0.0:5432
 ```
 
-The image is private, so a namespace needs a pull secret for `ghcr.io`; the cluster
+The image is private, so a namespace needs a pull secret for `ghcr.io`; the
 namespace and manifests live in the
 [`infrastructure`](https://github.com/CopodServices/infrastructure) repository.
